@@ -2,14 +2,9 @@
 
 A fully local, single-Pi voice-ordering drive-thru: a camera + mic at the
 speaker post, a speech pipeline that turns spoken orders into structured JSON
-(Whisper → DeepSeek → TTS confirmation), and a live 3-page web dashboard for
-kitchen staff. Everything runs on a Raspberry Pi 5 and serves over local WiFi —
-no cloud, no auth, no payment.
-
-**Language:** Whisper auto-detects the customer's language, so it works for
-**English, Tamil, Hindi, and more** out of the box; the confirmation is spoken
-back in the same language (Tamil via `espeak-ng -v ta`). The default menu is
-**South Indian** (dosa, idli, vada, pongal, filter coffee, …).
+(Whisper → DeepSeek → TTS), and a live 3-page web dashboard for kitchen staff.
+Everything runs on a Raspberry Pi 5 and serves over local WiFi — no cloud, no
+auth, no payment.
 
 ```
 mic + camera ──► voice_pipeline/ ──► POST /order ──► backend (FastAPI + SQLite)
@@ -18,15 +13,34 @@ mic + camera ──► voice_pipeline/ ──► POST /order ──► backend (
                                                         └─ WebSocket /ws ──► live queue updates
 ```
 
-The **same code runs two ways** — no separate builds:
+---
 
-| | Camera | Presence detection | Photo |
-|---|---|---|---|
-| **Raspberry Pi** | `picamera2` (auto) | YOLOv8n — fully automatic | yes |
-| **PC / no camera** | none | keypress ("press Enter") | placeholder |
+## Features
 
-`main.py` auto-detects the camera and falls back to keypress mode, so you can
-develop/test on a PC and drop the identical code on the Pi.
+- **Live queue dashboard** (3 pages, no build step): orders appear instantly via
+  WebSocket; staff move them `pending → preparing → ready → picked_up`.
+- **Menu editor** — the single source of truth the voice pipeline reads from.
+- **Stats / analytics** — orders & revenue today, top items, orders per hour
+  (pure-canvas charts, no chart library).
+- **Voice ordering** — mic → Whisper → DeepSeek → TTS, with **order confirmation**
+  ("your order is X — is that correct?") before anything is submitted.
+- **Order photos** — a clean still is captured after the order is parsed (not
+  mid-sentence); staff visually match the customer to the photo.
+- **Four run modes** (same code, no separate builds):
+
+  | Mode | How it triggers | Mic behaviour | Photo |
+  |---|---|---|---|
+  | `camera` (Pi) | YOLOv8n person detection | on only after a person is seen | yes |
+  | `wakeword` | wake word (e.g. "Friday") | stays on, activates on the word | no |
+  | `manual` | press Enter | on for a fixed window | no |
+  | `auto` | camera if present, else wake word | — | — |
+
+- **Multilingual** — Whisper auto-detects the language (English, Tamil, Hindi,
+  …) and the confirmation is spoken back in the same language.
+- **South Indian menu** pre-loaded (dosa, idli, vada, pongal, filter coffee, …).
+- **0.96" OLED display** (optional) — shows the order and asks "correct?" on screen.
+- **Headless / enclosure ready** — systemd auto-start with crash recovery and
+  offline-safe boot.
 
 ---
 
@@ -35,28 +49,22 @@ develop/test on a PC and drop the identical code on the Pi.
 ```
 ai_drive_thru/
 ├── voice_pipeline/            # mic -> Whisper -> DeepSeek -> TTS (separate process)
-│   ├── main.py                # orchestration loop (camera or keypress mode)
+│   ├── main.py                # orchestration loop (4 modes, confirmation, OLED)
 │   ├── test_order.py          # camera-free mic->order test (PC dev / quick check)
 │   ├── camera.py              # PresenceDetector (picamera2/cv2) + ManualDetector
+│   ├── wake_word.py           # WakeWordDetector (no-camera "Friday" trigger)
 │   ├── mic_capture.py         # record while the customer is present
-│   ├── stt.py                 # faster-whisper (multilingual, auto-detects Tamil etc.)
-│   ├── deepseek_client.py     # DeepSeek parsing + LIVE menu fetch from backend
-│   ├── tts_speaker.py         # pyttsx3 / espeak-ng (supports Tamil and others)
+│   ├── stt.py                 # faster-whisper (multilingual, auto-detects language)
+│   ├── deepseek_client.py     # DeepSeek parsing + confirmation + live menu fetch
+│   ├── tts_speaker.py         # pyttsx3 / espeak-ng (Tamil and more)
+│   ├── display.py             # optional 0.96" OLED (SSD1306)
 │   ├── menu.json              # fallback menu (used only if the backend is down)
 │   ├── .env.example           # template for DEEPSEEK_API_KEY (used by systemd)
 │   └── requirements.txt
-├── backend/
-│   ├── app.py                 # FastAPI: endpoints + WebSocket + static serving
-│   ├── db.py                  # SQLite setup + queries
-│   ├── models.py              # Pydantic schemas
-│   └── requirements.txt
-├── dashboard/                 # plain HTML/CSS/JS, served by the backend (no build step)
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
+├── backend/                   # FastAPI + SQLite + WebSocket (serves the dashboard)
+├── dashboard/                 # plain HTML/CSS/JS (Live Queue, Menu, Stats)
 ├── systemd/                   # auto-start units for headless/enclosure use
-│   ├── ai-drive-thru-backend.service
-│   └── ai-drive-thru-voice.service
+├── docs/                      # PDF guide
 ├── data/photos/               # order photos + SQLite DB (created at runtime, gitignored)
 ├── run.sh                     # starts the backend (+ dashboard) on :8000
 └── README.md
@@ -66,10 +74,12 @@ ai_drive_thru/
 
 ## Raspberry Pi 5 setup (fresh Raspberry Pi OS, 64-bit Bookworm)
 
-### 1. Enable the camera
+### 1. Enable the camera and (for the OLED) I2C
 
 ```bash
-sudo raspi-config      # Interface Options → Camera → Enable, then reboot
+sudo raspi-config      # Interface Options → Camera → Enable
+                       # Interface Options → I2C     → Enable
+sudo reboot
 ```
 
 ### 2. Install apt packages
@@ -95,41 +105,44 @@ sudo apt install -y \
 `picamera2`/`libcamera` ships with the full image; on the **Lite** image add
 `libcamera-apps python3-picamera2`.
 
-### 3. Get the code onto the Pi
+### 3. Get the code and install
 
 ```bash
 git clone https://github.com/naveenkumar-sudoai/AI-Drive_Thru.git ai_drive_thru
 cd ai_drive_thru
-```
 
-### 4. Install the backend and run it (first run, for testing)
-
-```bash
+# backend + dashboard
 chmod +x run.sh
-./run.sh
-```
+./run.sh                 # creates .venv, installs deps, serves :8000
 
-`run.sh` creates `.venv`, installs the backend deps once, and starts uvicorn on
-`0.0.0.0:8000`. Open **http://\<pi-ip\>:8000** from any device on the WiFi
-(`hostname -I` prints the IP).
-
-### 5. Install the voice pipeline (separate venv — pulls in PyTorch)
-
-```bash
+# voice pipeline (separate venv — pulls in PyTorch)
 cd voice_pipeline
 python3 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# API key (used by systemd later):
+# (optional) OLED display
+pip install luma.oled
+
+# API key
 cp .env.example .env
-nano .env            # set DEEPSEEK_API_KEY=sk-...
+nano .env               # set DEEPSEEK_API_KEY=sk-...
 ```
 
 First run downloads `yolov8n.pt` (~6 MB) and the Whisper model (~74 MB for
 `base`) — do this **while online**, before sealing the enclosure.
 
-### 6. Run the voice pipeline
+---
+
+## Running
+
+### Backend + dashboard
+
+```bash
+./run.sh                # → http://<pi-ip>:8000
+```
+
+### Voice pipeline
 
 ```bash
 cd voice_pipeline && source .venv/bin/activate
@@ -137,25 +150,54 @@ export DEEPSEEK_API_KEY="$(cat ../api_key.txt)"   # or: source .env
 python main.py
 ```
 
-On the Pi this is fully automatic (presence-gated). On a camera-less PC it
-prints a keypress prompt — press Enter to take an order.
+Choose a mode with `PIPELINE_MODE`:
+
+| `PIPELINE_MODE` | Behaviour |
+|---|---|
+| *(unset / `auto`)* | camera if present, otherwise wake word (interactive) |
+| `camera` | force presence-gated (Pi) |
+| `wakeword` | mic stays on, triggers on `WAKE_WORD` (default "friday") |
+| `manual` | press Enter per order |
+
+Other env knobs: `WAKE_WORD`, `WHISPER_MODEL` (default `base`), `WHISPER_LANGUAGE`
+(e.g. `ta`), `BACKEND_URL`, `RECORD_SECONDS`, `MAX_CLARIFICATIONS`,
+`MAX_CONFIRMATIONS`.
+
+### PC test (no camera, no speaker loop)
+
+```bash
+python voice_pipeline/test_order.py   # records once, reads back, asks to confirm
+```
+
+---
+
+## How an order flows
+
+1. **Trigger** — person seen ~1s (camera), wake word heard (wakeword), or Enter (manual).
+2. **Record** — until the person leaves / a cap / a fixed window.
+3. **Transcribe** — Whisper, language auto-detected.
+4. **Parse** — DeepSeek maps slang & context to the menu ("ghee roast" → "Ghee Roast Dosa"); if ambiguous it asks a clarifying question.
+5. **Confirm** — the order is read back ("your order is 1 Masala Dosa, 1 Filter Coffee. Total 120 rupees — is that correct?") and shown on the OLED. It is **only submitted once the customer says yes**; "no"/changes restart the order.
+6. **Photo** — a clean still is captured now (camera mode).
+7. **Submit** — `POST /order` + `/upload_photo`; the queue updates live.
+8. **Confirm aloud** — spoken back in the customer's language, then the loop resets.
+
+---
+
+## OLED display (0.96" SSD1306)
+
+- Wire the OLED to the Pi's I2C pins (SDA → GPIO2/SDA, SCL → GPIO3/SCL, VCC → 3V3, GND → GND). The default I2C address is `0x3C` (change via `Display(address=…)` in `display.py`).
+- Enable I2C (raspi-config) and `pip install luma.oled`.
+- The screen shows the order + total + "Correct? yes/no" during confirmation. If no OLED is connected, `display.py` is a safe no-op, so the pipeline runs identically without it.
 
 ---
 
 ## Deploy headless in an enclosure (auto-start, reliable)
 
-For a sealed enclosure there's no keyboard/screen, so run both processes as
-systemd services with automatic restart on crash.
-
 ```bash
-# backend + dashboard
 sudo cp systemd/ai-drive-thru-backend.service /etc/systemd/system/
 sudo cp systemd/ai-drive-thru-voice.service    /etc/systemd/system/
-
 # edit User= / WorkingDirectory= / ExecStart= to match your Pi user + clone path
-sudo nano /etc/systemd/system/ai-drive-thru-backend.service
-sudo nano /etc/systemd/system/ai-drive-thru-voice.service
-
 sudo systemctl daemon-reload
 sudo systemctl enable --now ai-drive-thru-backend
 sudo systemctl enable --now ai-drive-thru-voice
@@ -163,64 +205,31 @@ sudo systemctl enable --now ai-drive-thru-voice
 
 Reliability behaviour:
 
-- **Auto-restart** — both units use `Restart=always` (3 s backoff), so a crash
-  or transient error recovers by itself.
-- **Offline-safe boot** — `run.sh` skips reinstalling dependencies when they're
-  already present, so the backend starts fast even with no network.
-- **Camera failure** — on a headless Pi the voice pipeline will **not** fall
-  back to keypress mode (there's no keyboard); it exits and systemd restarts it,
-  retrying the camera.
-- **Watch logs** — `journalctl -u ai-drive-thru-backend -f` and
-  `journalctl -u ai-drive-thru-voice -f`.
-
-> The voice service reads `DEEPSEEK_API_KEY` from `voice_pipeline/.env`
-> (via `EnvironmentFile=`). Make sure that file exists before enabling it.
+- **Auto-restart** — both units use `Restart=always` (3 s backoff).
+- **Offline-safe boot** — `run.sh` skips reinstalling deps when present.
+- **Camera failure** — on a headless Pi the pipeline exits (rather than hanging on
+  a keypress) and systemd restarts it, retrying the camera.
+- **Logs** — `journalctl -u ai-drive-thru-backend -f` / `-u ai-drive-thru-voice -f`.
 
 ---
 
 ## Tamil / multilingual support
 
-- **Speech-to-text:** Whisper (via `faster-whisper`) is multilingual and
-  auto-detects the language from the audio — Tamil included. Force a language
-  with `export WHISPER_LANGUAGE=ta` (or `en`) to skip detection and speed it up.
-- **Text-to-speech:** the confirmation is spoken in the detected language. Tamil
-  uses `espeak-ng -v ta` (a robotic but intelligible voice). For higher-quality
-  Tamil/Indian voices later, swap the `_speak_cli` path in `tts_speaker.py` for a
-  cloud or Piper TTS voice — the rest of the code doesn't change.
-
----
-
-## How the voice pipeline behaves
-
-1. `camera.py` runs YOLOv8n on a **320×240** frame sampled every **~0.5 s** to
-   keep Pi 5 CPU load low.
-2. A person seen continuously for **~1 s** confirms presence; recording starts
-   automatically (no push-to-talk). In manual (no-camera) mode, a keypress
-   starts the order instead.
-3. Recording continues until the person leaves or a **15 s** cap (camera mode),
-   or a fixed **8 s** window (manual mode).
-4. After DeepSeek parses the order (not on a clarification), a **clean photo is
-   captured at that moment** — not mid-sentence (camera mode only).
-5. The order is POSTed to `/order`, the photo uploaded to `/upload_photo`, a TTS
-   confirmation is spoken (in the customer's language), and the loop resets.
+- **STT** — Whisper auto-detects the language (Tamil included). Force one with
+  `WHISPER_LANGUAGE=ta`.
+- **TTS** — the confirmation is spoken in the detected language; Tamil uses
+  `espeak-ng -v ta` (robotic but intelligible). For a nicer voice, swap the
+  `_speak_cli` path in `tts_speaker.py` for Piper/cloud TTS.
+- **Parsing** — the DeepSeek prompt handles slang/context in English and Tamil.
 
 ---
 
 ## First-run: your menu
 
-The **Menu Editor** tab is the single source of truth — the voice pipeline
-fetches it live (`GET /menu`) and feeds it to DeepSeek. A South Indian menu is
-already in `voice_pipeline/menu.json` (the offline fallback) and can be seeded
-with:
-
-```bash
-# per item:
-curl -X POST http://localhost:8000/menu -H 'Content-Type: application/json' \
-  -d '{"name":"Masala Dosa","price":90,"available":true}'
-```
-
-(or just add/edit items in the dashboard). If the backend is down, the pipeline
-falls back to `menu.json`.
+The **Menu Editor** tab is the single source of truth. A South Indian menu is
+pre-loaded in `voice_pipeline/menu.json` (the offline fallback) and can be seeded
+with `curl -X POST http://localhost:8000/menu -H 'Content-Type: application/json'
+-d '{"name":"Masala Dosa","price":90,"available":true}'`.
 
 ---
 
@@ -229,42 +238,40 @@ falls back to `menu.json`.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/menu` | list menu items |
-| `POST` | `/menu` | add item `{name, price, available}` |
-| `PUT` | `/menu/{id}` | update item (partial) |
+| `POST` | `/menu` | add item |
+| `PUT` | `/menu/{id}` | update item |
 | `DELETE` | `/menu/{id}` | remove item |
-| `POST` | `/order` | create order `{order_id, items, total_price, photo_path, timestamp, status}` |
-| `GET` | `/orders?status=pending,preparing,ready` | list orders, optional status filter |
-| `PATCH` | `/orders/{id}` | update status `{"status": "..."}` |
+| `POST` | `/order` | create order |
+| `GET` | `/orders?status=…` | list orders, optional filter |
+| `PATCH` | `/orders/{id}` | update status |
 | `GET` | `/stats` | totals + top items + orders/hour |
-| `POST` | `/upload_photo/{order_id}` | multipart image upload → `data/photos/{id}.jpg` |
-| `WS` | `/ws` | broadcasts `{"type":"new_order","order":{...}}` and `{"type":"order_updated","order":{...}}` |
+| `POST` | `/upload_photo/{order_id}` | upload a photo |
+| `WS` | `/ws` | live order broadcasts |
 | `GET` | `/health` | liveness check |
 
-Order statuses: `pending → preparing → ready → picked_up`.
+Statuses: `pending → preparing → ready → picked_up`.
 
 ---
 
-## Performance flags (don't silently change — note & verify)
+## Performance flags (note & verify — don't silently change)
 
-- **YOLO speed on Pi 5 CPU** (320×240 @ 0.5 Hz): if too slow, **flag it** and
-  either (a) export `yolov8n` to ONNX/NCNN, or (b) drop detection resolution
-  (256×192 / 224×224) — constructor args in `camera.py`.
-- **Whisper speed**: `WHISPER_MODEL=tiny` is near-real-time on Pi; `base` is
-  more accurate but slower.
+- **YOLO on Pi 5** (320×240 @ 0.5 Hz): if slow, export to ONNX/NCNN or drop
+  resolution (256×192) — constructor args in `camera.py`.
+- **Whisper** — `WHISPER_MODEL=tiny` is fastest.
+- **Wake word** — uses Whisper "tiny" on a rolling window (~every 1.5 s); for a
+  lighter/always-on production wake word, swap `wake_word.py` to OpenWakeWord or
+  Porcupine.
 
 ## Troubleshooting
 
-- **`cv2` import error** → install `libgl1`.
-- **No audio** → confirm `portaudio19-dev`; test with
-  `python -c "import sounddevice as sd; print(sd.query_devices())"`.
+- **`cv2` import error** → `sudo apt install -y libgl1`.
+- **No audio** → `python -c "import sounddevice as sd; print(sd.query_devices())"`.
 - **No voice** → `sudo apt install -y espeak-ng espeak-ng-espeak`.
-- **Tamil voice missing** → `espeak-ng --voices=ta` should list a Tamil voice.
-- **Dashboard blank** → run `./run.sh` from the repo root (paths resolve relative
-  to `backend/app.py`).
-- **Photos 404** → ensure `data/photos/` exists (created automatically); the UI
-  shows a placeholder avatar otherwise.
+- **OLED blank** → confirm I2C enabled and the address (`i2cdetect -y 1`).
+- **Dashboard blank** → run `./run.sh` from the repo root.
+- **Photos 404** → ensure `data/photos/` exists (created automatically).
 
-## Non-goals (intentionally out of scope)
+## Non-goals
 
 No facial recognition (staff visually match the photo), no payments, no login,
 no cloud — 100% local network, Pi-hosted.

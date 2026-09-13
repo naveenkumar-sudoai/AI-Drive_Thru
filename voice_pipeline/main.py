@@ -1,21 +1,16 @@
 """AI Drive-Thru voice pipeline entry point.
 
-The SAME code runs two ways:
+Runs in one of four modes (PIPELINE_MODE env, default "auto"):
 
-  * Camera present (Raspberry Pi): fully automatic, presence-gated — YOLOv8n
-    detects a person, recording starts by itself, and a photo is captured.
-  * No camera (a PC): keypress-driven fallback — press Enter to take an order,
-    no photo is captured. Useful for development and as a safety net.
+  * "camera"   — presence-gated via picamera2/cv2 + YOLOv8n (Raspberry Pi).
+  * "wakeword" — mic stays on, activates when the wake word is heard (no camera).
+  * "manual"   — press Enter to start each order (quick PC test).
+  * "auto"     — try camera; if there's none (and a tty), fall back to wake word.
 
-Flow:
-1. wait_for_confirmed_person()  — person seen ~1s (or a keypress in manual mode)
-2. record_while_present()       — record until they leave / cap / fixed window
-3. stt.transcribe()             — Whisper (faster-whisper, auto-detects language)
-4. deepseek_client.parse_order()— DeepSeek -> structured order (or clarification)
-5. on clarification: speak the question and listen again
-6. capture_photo()              — clean still (camera mode only)
-7. POST /order + /upload_photo  — send to the backend
-8. speak a confirmation (in the customer's language), wait for them to leave, reset
+Flow (after an order is spoken and parsed):
+  - ask the customer "your order is … — is that correct?" (spoken + OLED)
+  - only submit the order to the backend once they say yes; handle changes
+  - show the order and confirmation on a 0.96" OLED if one is connected
 
 Run from the project root:   python voice_pipeline/main.py
 """
@@ -30,7 +25,9 @@ import uuid
 import requests
 
 from camera import ManualDetector, PresenceDetector
-from deepseek_client import load_menu, parse_order
+from deepseek_client import confirm_order, load_menu, parse_order, summarize_order
+from display import Display
+from wake_word import WakeWordDetector
 import mic_capture
 import stt
 import tts_speaker
@@ -39,25 +36,31 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 TEMP_DIR = os.environ.get("TEMP_DIR", "/tmp/ai_drive_thru")
 SAFETY_CAP_SECONDS = float(os.environ.get("SAFETY_CAP_SECONDS", "15"))
 MAX_CLARIFICATIONS = int(os.environ.get("MAX_CLARIFICATIONS", "2"))
+MAX_CONFIRMATIONS = int(os.environ.get("MAX_CONFIRMATIONS", "2"))
+CONFIRM_SECONDS = float(os.environ.get("CONFIRM_SECONDS", "4"))
 
 
 def _make_detector():
-    """Pick the presence detector: camera if available, keypress otherwise.
+    """Pick the detector based on PIPELINE_MODE (camera / wakeword / manual / auto)."""
+    mode = os.environ.get("PIPELINE_MODE", "auto").strip().lower()
 
-    On a headless box (a Pi sealed in an enclosure, running under systemd) we do
-    NOT fall back to keypress mode — there is no keyboard, so it's better to
-    raise and let the service manager restart us (retrying the camera) than to
-    hang on an input() prompt.
-    """
+    if mode == "camera":
+        return PresenceDetector()
+    if mode == "wakeword":
+        return WakeWordDetector()
+    if mode == "manual":
+        return ManualDetector()
+
+    # auto: camera first, then wake-word fallback (interactive terminals only).
     try:
         detector = PresenceDetector()
         print("[pipeline] camera ready — presence-gated mode")
         return detector
     except Exception as exc:
         if not sys.stdin.isatty():
-            raise
-        print(f"[pipeline] no camera ({exc}) — manual (keypress) mode")
-        return ManualDetector()
+            raise  # headless (systemd): let the service manager restart us
+        print(f"[pipeline] no camera ({exc}) — wake-word mode")
+        return WakeWordDetector()
 
 
 def short_uuid() -> str:
@@ -92,7 +95,7 @@ def upload_photo(order_id: str, local_path: str) -> dict:
 def _wait_until_absent(detector, timeout: float = 20.0) -> None:
     """Wait for the customer to leave before watching for the next one."""
     if getattr(detector, "manual", False):
-        time.sleep(2.0)  # no camera: brief pause before the next keypress
+        time.sleep(2.0)  # no camera: brief pause before the next trigger
         return
     start = time.time()
     while time.time() - start < timeout:
@@ -116,25 +119,26 @@ def main() -> None:
     os.makedirs(TEMP_DIR, exist_ok=True)
 
     detector = _make_detector()
-    # Manual mode records a short fixed window; camera mode records until the
-    # person leaves (with SAFETY_CAP_SECONDS as the hard ceiling).
     record_seconds = getattr(detector, "record_seconds", None) or SAFETY_CAP_SECONDS
+    display = Display()
+    display.show_status("Starting…")
     print("[pipeline] watching for customers")
 
     try:
         while True:
-            # 1. wait for a person (camera) or a keypress (manual)
+            # 1. wait for a person / wake word / keypress
             detector.wait_for_confirmed_person()
+            display.show_status("Listening…")
             print("[pipeline] customer present — listening")
 
-            # 2. record
+            # 2. record the order
             audio = mic_capture.record_while_present(
                 detector.is_person_still_present, max_seconds=record_seconds
             )
             if audio is None:
                 continue
 
-            # 3. transcribe (auto-detects the language)
+            # 3. transcribe (auto-detects language)
             transcript, lang = stt.transcribe_with_language(audio)
             print(f"[pipeline] heard ({lang}): {transcript!r}")
 
@@ -169,23 +173,70 @@ def main() -> None:
                     break
                 print(f"[pipeline] heard ({lang}) follow-up: {transcript!r}")
             else:
-                # exhausted the clarification budget
                 tts_speaker.speak(
                     "Sorry, I'm still not sure. Please pull forward to the window.", lang
                 )
                 result = None
 
             if result is None or result.get("status") != "ok":
+                display.show_status("Waiting…")
                 _wait_until_absent(detector)
                 continue
 
-            # 6. capture a clean photo now (order parsed, not mid-sentence)
+            # 6. confirm the order with the customer before submitting
+            summary = summarize_order(result["items"], result["total_price"])
+            confirmed = False
+            for _ in range(MAX_CONFIRMATIONS):
+                display.show_order(result["items"], result["total_price"])
+                tts_speaker.speak(f"Your order is {summary}. Is that correct?", lang)
+                audio = mic_capture.record_while_present(
+                    detector.is_person_still_present, max_seconds=CONFIRM_SECONDS
+                )
+                if audio is None:
+                    break
+                answer, _ = stt.transcribe_with_language(audio)
+                print(f"[pipeline] confirmation answer: {answer!r}")
+                if not answer.strip():
+                    break
+
+                try:
+                    decision = confirm_order(answer, summary)
+                except Exception as exc:
+                    print(f"[pipeline] confirm failed: {exc}")
+                    decision = "unclear"
+
+                if decision == "yes":
+                    confirmed = True
+                    break
+                if decision in ("no", "change"):
+                    tts_speaker.speak("Okay, please tell me your full order again.", lang)
+                    audio = mic_capture.record_while_present(
+                        detector.is_person_still_present, max_seconds=record_seconds
+                    )
+                    if audio is None:
+                        break
+                    transcript, lang = stt.transcribe_with_language(audio)
+                    result = parse_order(transcript, menu)
+                    if result.get("status") != "ok":
+                        result = None
+                        break
+                    summary = summarize_order(result["items"], result["total_price"])
+                    continue
+                # unclear — ask again
+                tts_speaker.speak("Sorry, I didn't catch that. Is your order correct?", lang)
+
+            if not confirmed:
+                display.show_status("Waiting…")
+                _wait_until_absent(detector)
+                continue
+
+            # 7. capture a clean photo now (camera mode only)
             order_id = short_uuid()
             local_photo = os.path.join(TEMP_DIR, f"{order_id}.jpg")
             if not detector.capture_photo(local_photo):
                 local_photo = None
 
-            # 7. send the order to the backend
+            # 8. send the order to the backend
             try:
                 post_order(order_id, result["items"], result["total_price"])
                 if local_photo:
@@ -196,16 +247,19 @@ def main() -> None:
             except Exception as exc:
                 print(f"[pipeline] order POST failed (is the backend running?): {exc}")
 
-            # 8. confirm aloud in the customer's language
+            # 9. confirm aloud in the customer's language
             message, speak_lang = _confirmation(result["total_price"], lang)
+            display.show_order(result["items"], result["total_price"], "Confirmed ✓")
             tts_speaker.speak(message, speak_lang)
 
-            # 9. wait for them to leave, then reset for the next customer
+            # 10. wait for them to leave, then reset for the next customer
             _wait_until_absent(detector)
+            display.show_status("Waiting…")
             print("[pipeline] customer gone — watching again")
     except KeyboardInterrupt:
         print("\n[pipeline] shutting down")
     finally:
+        display.clear()
         detector.release()
 
 

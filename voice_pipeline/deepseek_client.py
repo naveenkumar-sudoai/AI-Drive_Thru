@@ -231,3 +231,66 @@ def _normalize_items(raw_items, lookup: dict) -> List[dict]:
         {"name": v["name"], "quantity": v["quantity"], "notes": v["notes"], "price": v["price"]}
         for v in merged.values()
     ]
+
+
+def summarize_order(items: List[dict], total: float) -> str:
+    """Human-readable one-line order summary for TTS, display and confirmation."""
+    parts = []
+    for it in items:
+        q = int(it.get("quantity", 1))
+        name = it.get("name", "?")
+        notes = (it.get("notes") or "").strip()
+        s = f"{q} {name}"
+        if notes:
+            s += f" ({notes})"
+        parts.append(s)
+    body = ", ".join(parts) if parts else "nothing"
+    return f"{body}. Total {total:.2f} rupees."
+
+
+_CONFIRM_PROMPT = """You are the order-confirmation step of a drive-thru assistant.
+The customer was told their order is: {summary}
+The customer then responded: "{response}"
+
+Classify the customer's response into exactly ONE of:
+- "yes"     — they confirmed the order is correct (e.g. "yes", "correct", "that's right", "okay", "சரி", "ஆமாம்")
+- "no"      — they rejected it outright (e.g. "no", "wrong", "இல்லை")
+- "change"  — they want to change part of the order (e.g. "remove the coffee", "make it two dosas", "add one vada")
+- "unclear" — you cannot tell what they meant
+
+Respond with ONLY a JSON object: {{"status": "<yes|no|change|unclear>"}}"""
+
+
+def confirm_order(response: str, summary: str) -> str:
+    """Classify the customer's confirmation answer. Returns yes/no/change/unclear."""
+    response = (response or "").strip()
+    if not response:
+        return "unclear"
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is not set. Export it before running the voice pipeline."
+        )
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": _CONFIRM_PROMPT.format(summary=summary, response=response),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+    }
+    resp = requests.post(
+        f"{DEEPSEEK_BASE_URL}/chat/completions",
+        headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"]
+    try:
+        status = str(json.loads(content).get("status", "unclear")).lower()
+    except json.JSONDecodeError:
+        return "unclear"
+    return status if status in ("yes", "no", "change") else "unclear"

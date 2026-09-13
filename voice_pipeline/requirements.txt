@@ -14,3 +14,7 @@ ultralytics
 # picamera2 is NOT listed here: it is not on PyPI for x86 and is provided by
 # Raspberry Pi OS itself (python3-picamera2, preinstalled on the full image).
 # camera.py falls back to OpenCV on a PC and uses picamera2 when available.
+
+# Optional: 0.96" OLED (SSD1306) display support — install only if you have the
+# screen, and enable I2C first (raspi-config -> Interface Options -> I2C):
+#   pip install luma.oled
