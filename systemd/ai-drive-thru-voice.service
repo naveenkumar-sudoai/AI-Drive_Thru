@@ -1,0 +1,32 @@
+# AI Drive-Thru voice pipeline (systemd unit for headless/enclosure use).
+#
+# Prerequisites (run once before enabling — see README):
+#   1. voice_pipeline/.venv created and dependencies installed
+#   2. voice_pipeline/.env exists with DEEPSEEK_API_KEY=sk-... (see .env.example)
+#   3. camera enabled (sudo raspi-config → Interface Options → Camera)
+#
+# Install:
+#   sudo cp systemd/ai-drive-thru-voice.service /etc/systemd/system/
+#   # EDIT User=, WorkingDirectory= and ExecStart= to match your Pi user + clone path
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ai-drive-thru-voice
+#
+# View logs:  journalctl -u ai-drive-thru-voice -f
+
+[Unit]
+Description=AI Drive-Thru voice pipeline
+Wants=network-online.target
+After=network-online.target ai-drive-thru-backend.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ai_drive_thru
+EnvironmentFile=/home/pi/ai_drive_thru/voice_pipeline/.env
+Environment=BACKEND_URL=http://localhost:8000
+ExecStart=/home/pi/ai_drive_thru/voice_pipeline/.venv/bin/python /home/pi/ai_drive_thru/voice_pipeline/main.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

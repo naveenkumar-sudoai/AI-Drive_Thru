@@ -1,0 +1,16 @@
+# Voice pipeline dependencies.
+#
+# NOTE: `ultralytics` pulls in torch and opencv-python. On Raspberry Pi OS you
+# must install libgl1 first (sudo apt install -y libgl1) so cv2 can import, and
+# note that torch is a large download (~800 MB). See the README's "flags" note
+# about exporting YOLO to ONNX/NCNN if CPU inference is too slow.
+numpy
+sounddevice
+faster-whisper
+requests
+pyttsx3
+ultralytics
+
+# picamera2 is NOT listed here: it is not on PyPI for x86 and is provided by
+# Raspberry Pi OS itself (python3-picamera2, preinstalled on the full image).
+# camera.py falls back to OpenCV on a PC and uses picamera2 when available.

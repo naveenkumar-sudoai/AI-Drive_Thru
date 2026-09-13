@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime data (SQLite DB, order photos)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Voice pipeline artifacts
+*.wav
+voice_pipeline/*.pt
+/tmp/ai_drive_thru/
+
+# Secrets / local config — never commit
+api_key.txt
+.env
+*.key
+
+# OS
+.DS_Store

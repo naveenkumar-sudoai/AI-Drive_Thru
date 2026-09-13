@@ -1,0 +1,7 @@
+# Backend dependencies. Kept deliberately lean for Raspberry Pi OS (aarch64):
+# plain uvicorn + websockets avoids compiling uvloop/httptools, which have no
+# reliable prebuilt wheels on arm64.
+fastapi>=0.110
+uvicorn>=0.29
+websockets>=12
+python-multipart>=0.0.9

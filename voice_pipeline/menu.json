@@ -1,0 +1,23 @@
+[
+  {"name": "Idli (2 pc)", "price": 40, "available": true},
+  {"name": "Masala Dosa", "price": 90, "available": true},
+  {"name": "Plain Dosa", "price": 60, "available": true},
+  {"name": "Ghee Roast Dosa", "price": 110, "available": true},
+  {"name": "Medu Vada", "price": 40, "available": true},
+  {"name": "Idli Vada Combo", "price": 70, "available": true},
+  {"name": "Ven Pongal", "price": 70, "available": true},
+  {"name": "Rava Upma", "price": 50, "available": true},
+  {"name": "Poori Masala (2 pc)", "price": 70, "available": true},
+  {"name": "Onion Uttapam", "price": 80, "available": true},
+  {"name": "Sambar Rice", "price": 80, "available": true},
+  {"name": "Curd Rice", "price": 70, "available": true},
+  {"name": "Lemon Rice", "price": 70, "available": true},
+  {"name": "Tamarind Rice", "price": 80, "available": true},
+  {"name": "Bisibele Bath", "price": 90, "available": true},
+  {"name": "Filter Coffee", "price": 30, "available": true},
+  {"name": "Masala Chai", "price": 25, "available": true},
+  {"name": "Buttermilk (Neer Mor)", "price": 20, "available": true},
+  {"name": "Sweet Lassi", "price": 40, "available": true},
+  {"name": "Mysore Pak", "price": 50, "available": true},
+  {"name": "Gulab Jamun (2 pc)", "price": 40, "available": true}
+]

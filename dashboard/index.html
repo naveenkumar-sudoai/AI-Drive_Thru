@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Drive-Thru Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🍔 AI Drive-Thru</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="queue" role="tab">Live Queue</button>
+      <button class="tab" data-view="menu" role="tab">Menu Editor</button>
+      <button class="tab" data-view="stats" role="tab">Stats</button>
+    </nav>
+    <div class="conn" id="connStatus" title="WebSocket connection status">
+      <span class="dot"></span><span id="connText">connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===== Live Queue ===== -->
+    <section id="view-queue" class="view active">
+      <div id="queueList" class="queue"></div>
+      <div id="queueEmpty" class="empty hidden">No active orders 🎉</div>
+    </section>
+
+    <!-- ===== Menu Editor ===== -->
+    <section id="view-menu" class="view">
+      <form class="card menu-add" id="addItemForm" autocomplete="off">
+        <h2>Add new item</h2>
+        <div class="menu-add-row">
+          <input class="input grow" id="newName" placeholder="Item name" required>
+          <input class="input" id="newPrice" type="number" step="0.01" min="0" placeholder="Price" required>
+          <label class="check"><input type="checkbox" id="newAvailable" checked> Available</label>
+          <button class="btn primary" type="submit">Add</button>
+        </div>
+      </form>
+
+      <div class="card">
+        <table class="menu-table">
+          <thead>
+            <tr><th>Name</th><th>Price</th><th>Available</th><th class="right">Actions</th></tr>
+          </thead>
+          <tbody id="menuTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== Stats ===== -->
+    <section id="view-stats" class="view">
+      <div class="stat-cards">
+        <div class="stat card">
+          <div class="stat-label">Orders Today</div>
+          <div class="stat-value" id="statOrders">–</div>
+        </div>
+        <div class="stat card">
+          <div class="stat-label">Revenue Today</div>
+          <div class="stat-value" id="statRevenue">–</div>
+        </div>
+      </div>
+
+      <div class="chart-row">
+        <div class="card chart-card">
+          <h3>Top Items Today</h3>
+          <canvas id="chartTop" height="240"></canvas>
+          <div id="chartTopFallback" class="fallback hidden"></div>
+        </div>
+        <div class="card chart-card">
+          <h3>Orders Per Hour (Today)</h3>
+          <canvas id="chartHours" height="240"></canvas>
+          <div id="chartHoursFallback" class="fallback hidden"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Top Items All-Time</h3>
+        <ul id="topAllTime" class="top-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
