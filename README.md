@@ -35,8 +35,8 @@ mic + camera ──► voice_pipeline/ ──► POST /order ──► backend (
   | `manual` | press Enter | on for a fixed window | no |
   | `auto` | camera if present, else wake word | — | — |
 
-- **Multilingual** — Whisper auto-detects the language (English, Tamil, Hindi,
-  …) and the confirmation is spoken back in the same language.
+- **English output** — spoken prompts and confirmations are English (STT still
+  auto-detects the language; native-language TTS planned for later).
 - **South Indian menu** pre-loaded (dosa, idli, vada, pongal, filter coffee, …).
 - **0.96" OLED display** (optional) — shows the order and asks "correct?" on screen.
 - **Headless / enclosure ready** — systemd auto-start with crash recovery and
@@ -56,7 +56,7 @@ ai_drive_thru/
 │   ├── mic_capture.py         # record while the customer is present
 │   ├── stt.py                 # faster-whisper (multilingual, auto-detects language)
 │   ├── deepseek_client.py     # DeepSeek parsing + confirmation + live menu fetch
-│   ├── tts_speaker.py         # pyttsx3 / espeak-ng (Tamil and more)
+│   ├── tts_speaker.py         # pyttsx3 / espeak-ng (English output)
 │   ├── display.py             # optional 0.96" OLED (SSD1306)
 │   ├── menu.json              # fallback menu (used only if the backend is down)
 │   ├── .env.example           # template for DEEPSEEK_API_KEY (used by systemd)
@@ -213,14 +213,12 @@ Reliability behaviour:
 
 ---
 
-## Tamil / multilingual support
+## Language support
 
-- **STT** — Whisper auto-detects the language (Tamil included). Force one with
-  `WHISPER_LANGUAGE=ta`.
-- **TTS** — the confirmation is spoken in the detected language; Tamil uses
-  `espeak-ng -v ta` (robotic but intelligible). For a nicer voice, swap the
-  `_speak_cli` path in `tts_speaker.py` for Piper/cloud TTS.
-- **Parsing** — the DeepSeek prompt handles slang/context in English and Tamil.
+- **Output** — all spoken prompts, clarifications and confirmations are **English**.
+- **Input** — Whisper still auto-detects the customer's language, so a Tamil or
+  Hindi order is transcribed and parsed correctly; only the spoken reply is
+  English. Native-language TTS will be revisited later.
 
 ---
 

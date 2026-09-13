@@ -86,7 +86,7 @@ How to understand the customer (use context and the menu, not exact-word matchin
 - Use the menu item's EXACT spelling/capitalization as listed above.
 - Combine duplicate items by summing their quantities.
 
-When to ask a clarification (ONE short, friendly question in the customer's language):
+When to ask a clarification (ONE short, friendly question in English):
 - The request is ambiguous between 2+ menu items (e.g. just "dosa" or "coffee") -> list the specific options.
 - An item is requested that is not on the menu and has no clear match -> say it's not available and suggest the closest item.
 - The order is empty or you cannot tell what they want.

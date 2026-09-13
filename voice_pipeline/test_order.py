@@ -5,6 +5,8 @@ presence detector (useful on a PC that has a mic but no camera). It records the
 order, reads it back and asks "is that correct?", and only posts to the backend
 once you say yes. Mirrors the production flow in main.py.
 
+All spoken output is English.
+
 Run from the project root:
     source voice_pipeline/.venv/bin/activate
     export DEEPSEEK_API_KEY="$(cat api_key.txt)"
@@ -33,16 +35,6 @@ from display import Display
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 RECORD_SECONDS = float(os.environ.get("RECORD_SECONDS", "6"))
 CONFIRM_SECONDS = float(os.environ.get("CONFIRM_SECONDS", "4"))
-
-
-def _confirmation(total: float, lang: str | None) -> tuple[str, str | None]:
-    if lang == "ta":
-        return (
-            f"உங்கள் ஆர்டர் உறுதி செய்யப்பட்டது. மொத்தம் {total:.2f} ரூபாய். "
-            f"தயவுசெய்து முன்னால் நகர்ந்து செல்லுங்கள்.",
-            "ta",
-        )
-    return f"Order confirmed. Your total is {total:.2f} rupees. Please pull forward.", None
 
 
 def _list_devices() -> None:
@@ -78,8 +70,8 @@ def main() -> None:
     if audio is None:
         return
     print("Transcribing...")
-    transcript, lang = stt.transcribe_with_language(audio)
-    print(f"Heard ({lang}):", repr(transcript))
+    transcript = stt.transcribe(audio)
+    print("Heard:", repr(transcript))
     if not transcript.strip():
         print("Nothing recognized.")
         return
@@ -88,20 +80,20 @@ def main() -> None:
     result = parse_order(transcript, menu)
     print("Parsed:", json.dumps(result, indent=2, ensure_ascii=False))
     if result.get("status") == "clarification":
-        tts_speaker.speak(result.get("question", "Could you repeat that?"), lang)
+        tts_speaker.speak(result.get("question", "Could you repeat that?"))
         return
 
     # 2. confirm before submitting
     total = result["total_price"]
     summary = summarize_order(result["items"], total)
     display.show_order(result["items"], total)
-    tts_speaker.speak(f"Your order is {summary}. Is that correct?", lang)
+    tts_speaker.speak(f"Your order is {summary}. Is that correct?")
 
     input(f"Press Enter, then say 'yes' or 'no' (recording {CONFIRM_SECONDS:.0f}s)...")
     answer_audio = _record(CONFIRM_SECONDS)
     if answer_audio is None:
         return
-    answer, _ = stt.transcribe_with_language(answer_audio)
+    answer = stt.transcribe(answer_audio)
     print("Answer:", repr(answer))
     decision = confirm_order(answer, summary)
     print("Decision:", decision)
@@ -111,9 +103,8 @@ def main() -> None:
         return
 
     # 3. confirmed — speak + post
-    message, speak_lang = _confirmation(total, lang)
     display.show_order(result["items"], total, "Confirmed ✓")
-    tts_speaker.speak(message, speak_lang)
+    tts_speaker.speak(f"Order confirmed. Your total is {total:.2f} rupees. Please pull forward.")
 
     try:
         resp = requests.post(

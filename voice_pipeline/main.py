@@ -12,6 +12,9 @@ Flow (after an order is spoken and parsed):
   - only submit the order to the backend once they say yes; handle changes
   - show the order and confirmation on a 0.96" OLED if one is connected
 
+All spoken output is English (native-language TTS caused issues and will be
+revisited later).
+
 Run from the project root:   python voice_pipeline/main.py
 """
 
@@ -104,15 +107,8 @@ def _wait_until_absent(detector, timeout: float = 20.0) -> None:
         time.sleep(0.5)
 
 
-def _confirmation(total: float, lang: str | None) -> tuple[str, str | None]:
-    """Return (message, speak_language) for the order confirmation."""
-    if lang == "ta":
-        return (
-            f"உங்கள் ஆர்டர் உறுதி செய்யப்பட்டது. மொத்தம் {total:.2f} ரூபாய். "
-            f"தயவுசெய்து முன்னால் நகர்ந்து செல்லுங்கள்.",
-            "ta",
-        )
-    return f"Order confirmed. Your total is {total:.2f} rupees. Please pull forward.", None
+def _confirmation(total: float) -> str:
+    return f"Order confirmed. Your total is {total:.2f} rupees. Please pull forward."
 
 
 def main() -> None:
@@ -138,9 +134,9 @@ def main() -> None:
             if audio is None:
                 continue
 
-            # 3. transcribe (auto-detects language)
-            transcript, lang = stt.transcribe_with_language(audio)
-            print(f"[pipeline] heard ({lang}): {transcript!r}")
+            # 3. transcribe
+            transcript = stt.transcribe(audio)
+            print(f"[pipeline] heard: {transcript!r}")
 
             # 4-5. parse; loop on clarification (bounded — can't spin forever)
             menu = load_menu()
@@ -151,7 +147,7 @@ def main() -> None:
                 except Exception as exc:
                     print(f"[pipeline] parse failed: {exc}")
                     tts_speaker.speak(
-                        "Sorry, I had trouble with your order. Please pull forward.", lang
+                        "Sorry, I had trouble with your order. Please pull forward."
                     )
                     result = None
                     break
@@ -159,22 +155,22 @@ def main() -> None:
                 if result.get("status") != "clarification":
                     break
 
-                tts_speaker.speak(result.get("question", "Could you repeat that?"), lang)
+                tts_speaker.speak(result.get("question", "Could you repeat that?"))
                 audio = mic_capture.record_while_present(
                     detector.is_person_still_present, max_seconds=record_seconds
                 )
                 if audio is None:
                     result = None  # customer left mid-clarification
                     break
-                transcript, lang = stt.transcribe_with_language(audio)
+                transcript = stt.transcribe(audio)
                 if not transcript.strip():
                     print("[pipeline] silence after clarification — customer left")
                     result = None
                     break
-                print(f"[pipeline] heard ({lang}) follow-up: {transcript!r}")
+                print(f"[pipeline] heard follow-up: {transcript!r}")
             else:
                 tts_speaker.speak(
-                    "Sorry, I'm still not sure. Please pull forward to the window.", lang
+                    "Sorry, I'm still not sure. Please pull forward to the window."
                 )
                 result = None
 
@@ -188,13 +184,13 @@ def main() -> None:
             confirmed = False
             for _ in range(MAX_CONFIRMATIONS):
                 display.show_order(result["items"], result["total_price"])
-                tts_speaker.speak(f"Your order is {summary}. Is that correct?", lang)
+                tts_speaker.speak(f"Your order is {summary}. Is that correct?")
                 audio = mic_capture.record_while_present(
                     detector.is_person_still_present, max_seconds=CONFIRM_SECONDS
                 )
                 if audio is None:
                     break
-                answer, _ = stt.transcribe_with_language(audio)
+                answer = stt.transcribe(audio)
                 print(f"[pipeline] confirmation answer: {answer!r}")
                 if not answer.strip():
                     break
@@ -209,13 +205,13 @@ def main() -> None:
                     confirmed = True
                     break
                 if decision in ("no", "change"):
-                    tts_speaker.speak("Okay, please tell me your full order again.", lang)
+                    tts_speaker.speak("Okay, please tell me your full order again.")
                     audio = mic_capture.record_while_present(
                         detector.is_person_still_present, max_seconds=record_seconds
                     )
                     if audio is None:
                         break
-                    transcript, lang = stt.transcribe_with_language(audio)
+                    transcript = stt.transcribe(audio)
                     result = parse_order(transcript, menu)
                     if result.get("status") != "ok":
                         result = None
@@ -223,7 +219,7 @@ def main() -> None:
                     summary = summarize_order(result["items"], result["total_price"])
                     continue
                 # unclear — ask again
-                tts_speaker.speak("Sorry, I didn't catch that. Is your order correct?", lang)
+                tts_speaker.speak("Sorry, I didn't catch that. Is your order correct?")
 
             if not confirmed:
                 display.show_status("Waiting…")
@@ -247,10 +243,9 @@ def main() -> None:
             except Exception as exc:
                 print(f"[pipeline] order POST failed (is the backend running?): {exc}")
 
-            # 9. confirm aloud in the customer's language
-            message, speak_lang = _confirmation(result["total_price"], lang)
+            # 9. confirm aloud
             display.show_order(result["items"], result["total_price"], "Confirmed ✓")
-            tts_speaker.speak(message, speak_lang)
+            tts_speaker.speak(_confirmation(result["total_price"]))
 
             # 10. wait for them to leave, then reset for the next customer
             _wait_until_absent(detector)
