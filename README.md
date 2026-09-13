@@ -184,11 +184,25 @@ python voice_pipeline/test_order.py   # records once, reads back, asks to confir
 
 ---
 
-## OLED display (0.96" SSD1306)
+## OLED display (0.96" SSD1306, I2C)
 
-- Wire the OLED to the Pi's I2C pins (SDA → GPIO2/SDA, SCL → GPIO3/SCL, VCC → 3V3, GND → GND). The default I2C address is `0x3C` (change via `Display(address=…)` in `display.py`).
-- Enable I2C (raspi-config) and `pip install luma.oled`.
-- The screen shows the order + total + "Correct? yes/no" during confirmation. If no OLED is connected, `display.py` is a safe no-op, so the pipeline runs identically without it.
+The common 4-pin module wires straight to the Pi's 3.3V I2C header:
+
+| OLED pin | Pi header pin | Pi signal |
+|---|---|---|
+| VCC | Pin 1 | 3.3V |
+| GND | Pin 6 | GND |
+| SCL | Pin 5 | GPIO 3 (SCL) |
+| SDA | Pin 3 | GPIO 2 (SDA) |
+
+- Use **3.3V** (Pin 1) — not 5V.
+- Enable I2C (`sudo raspi-config` → Interface Options → I2C → Enable, then reboot)
+  and `pip install luma.oled`.
+- Check the address with `i2cdetect -y 1` — it should print `3c` (the default in
+  `display.py`). If yours shows `3d`, change `Display(address=0x3D)`.
+- The screen shows the order + total + "Correct? yes/no" during confirmation. If no
+  OLED is connected, `display.py` is a safe no-op, so the pipeline runs identically
+  without it.
 
 ---
 
