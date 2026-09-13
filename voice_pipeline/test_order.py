@@ -47,7 +47,7 @@ def _confirmation(total: float, lang: str | None) -> tuple[str, str | None]:
             f"தயவுசெய்து முன்னால் நகர்ந்து செல்லுங்கள்.",
             "ta",
         )
-    return f"Order confirmed. Your total is {total:.2f}. Please pull forward.", None
+    return f"Order confirmed. Your total is {total:.2f} rupees. Please pull forward.", None
 
 
 def _list_devices() -> None:

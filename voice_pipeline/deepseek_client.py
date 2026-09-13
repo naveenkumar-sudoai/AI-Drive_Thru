@@ -1,20 +1,20 @@
 """DeepSeek order parsing for the AI Drive-Thru.
 
-The menu is now loaded LIVE from the backend (GET /menu) so the dashboard's
-Menu Editor is the single source of truth. If the backend is unreachable (e.g.
-running standalone before the backend exists), we fall back to a local
-menu.json file.
+The menu is loaded LIVE from the backend (GET /menu) so the dashboard's Menu
+Editor is the single source of truth. If the backend is unreachable, it falls
+back to a local menu.json.
 
-The DeepSeek call turns a transcript into a structured order:
-    {"status": "ok", "items": [...], "total_price": <float>}
-or, when something needs clarifying:
-    {"status": "clarification", "question": "..."}
+The key job here is to let the LLM do the heavy lifting — understand slang,
+abbreviations and context ("ghee roast" -> "Ghee Roast Dosa", "kaapi" ->
+"Filter Coffee") — and then only lightly reconcile its answer against the menu
+rather than hard-dropping anything that isn't an exact string match.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import List, Optional
 
 import requests
@@ -31,11 +31,7 @@ MENU_JSON_PATH = os.environ.get(
 # --- menu loading -------------------------------------------------------
 
 def load_menu() -> List[dict]:
-    """Fetch the current menu from the backend; fall back to local menu.json.
-
-    Returns a list of items like {"id", "name", "price", "available"} (the
-    exact shape GET /menu returns), or the equivalent from menu.json.
-    """
+    """Fetch the current menu from the backend; fall back to local menu.json."""
     try:
         resp = requests.get(f"{BACKEND_URL}/menu", timeout=3)
         resp.raise_for_status()
@@ -45,68 +41,74 @@ def load_menu() -> List[dict]:
 
 
 def _load_menu_from_file() -> List[dict]:
-    """Fallback: read a local menu.json so the pipeline runs standalone."""
+    items = []
     try:
         with open(MENU_JSON_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return []
-
-    items = data if isinstance(data, list) else data.get("items", [])
-    return [
-        {
-            "name": it.get("name"),
-            "price": float(it.get("price", 0)),
-            "available": bool(it.get("available", True)),
-        }
-        for it in items
-        if isinstance(it, dict) and it.get("name")
-    ]
+        return items
+    for it in data if isinstance(data, list) else data.get("items", []):
+        if isinstance(it, dict) and it.get("name"):
+            items.append(
+                {
+                    "name": it.get("name"),
+                    "price": float(it.get("price", 0)),
+                    "available": bool(it.get("available", True)),
+                }
+            )
+    return items
 
 
 def _menu_text(menu: List[dict]) -> str:
-    lines = []
-    for item in menu:
-        if not item.get("available", True):
-            continue
-        name = item.get("name")
-        price = item.get("price", 0)
-        lines.append(f"- {name}: ${float(price):.2f}")
+    lines = [
+        f"- {item.get('name')}: ₹{float(item.get('price', 0)):.2f}"
+        for item in menu
+        if item.get("available", True)
+    ]
     return "\n".join(lines) if lines else "(no menu items available)"
 
 
 # --- order parsing ------------------------------------------------------
 
-_SYSTEM_PROMPT = """You are the order-taking assistant for a drive-thru restaurant.
-Parse the customer's spoken order into structured JSON.
+_SYSTEM_PROMPT = """You are the order-taking assistant for a South Indian drive-thru restaurant.
+Parse the customer's spoken order (English or Tamil; may use slang, abbreviations
+or casual phrasing) into structured JSON.
 
-Available menu (these are the ONLY items that can be ordered):
+Menu — these are the ONLY items and their exact names/prices:
 {menu}
 
-Rules:
-- Only include items that are on the menu. Match names loosely (e.g. "coke" -> "Coca-Cola").
+How to understand the customer (use context and the menu, not exact-word matching):
+- Map slang/abbreviations to the EXACT menu item. Examples: "ghee roast" -> "Ghee Roast Dosa",
+  "kaapi"/"filter kaapi"/"degree coffee"/"by two" -> "Filter Coffee", "sambar vadai" -> "Medu Vada"
+  (note "with sambar"), "combo" -> "Idli Vada Combo", "pongal" -> "Ven Pongal", "upma" -> "Rava Upma".
+- Customers often drop words: "two ghee roast" = 2 x Ghee Roast Dosa, "one vada" = 1 x Medu Vada.
+- Sizes/modifiers go in "notes": "no onion", "extra sambar", "less spicy", "no sugar", "large", "one by two".
+- Use the menu item's EXACT spelling/capitalization as listed above.
 - Combine duplicate items by summing their quantities.
-- "quantity" is a positive integer (default 1).
-- Put size/modifier requests in "notes" (e.g. "no pickles", "extra cheese", "large", "diet").
-- If the customer says a size or modifier only, fold it into the notes of the relevant item.
-- If the order is empty, ambiguous, or mentions an item that is not on the menu,
-  ask ONE short, friendly clarification question instead of guessing.
+
+When to ask a clarification (ONE short, friendly question in the customer's language):
+- The request is ambiguous between 2+ menu items (e.g. just "dosa" or "coffee") -> list the specific options.
+- An item is requested that is not on the menu and has no clear match -> say it's not available and suggest the closest item.
+- The order is empty or you cannot tell what they want.
 
 Respond with ONLY a JSON object (no markdown, no prose) in exactly one of these shapes:
 
-A valid order:
-{{"status": "ok", "items": [{{"name": "<menu item>", "quantity": <int>, "notes": "<string or empty>"}}], "total_price": <number>}}
+Valid order:
+{{"status":"ok","items":[{{"name":"<EXACT menu name>","quantity":<int>,"notes":"<string or empty>"}}],"total_price":<number>}}
 
-A clarification:
-{{"status": "clarification", "question": "<short question>"}}"""
+Clarification:
+{{"status":"clarification","question":"<short question>"}}"""
+
+
+def _norm(s: str) -> str:
+    """Normalize a name for tolerant matching (lowercase, no punctuation)."""
+    s = (s or "").lower().strip()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def _menu_lookup(menu: List[dict]) -> dict:
-    """Map lowercase menu name -> {"name": canonical name, "price": float}.
-
-    Only available items are orderable. Used to canonicalize the model's
-    loosely-cased names back to the exact menu name and to price items safely.
-    """
+    """Map normalized menu name -> {"name": canonical, "price": float} (available only)."""
     lookup = {}
     for item in menu:
         if not item.get("available", True):
@@ -114,8 +116,22 @@ def _menu_lookup(menu: List[dict]) -> dict:
         name = (item.get("name") or "").strip()
         if not name:
             continue
-        lookup[name.lower()] = {"name": name, "price": float(item.get("price", 0))}
+        lookup[_norm(name)] = {"name": name, "price": float(item.get("price", 0))}
     return lookup
+
+
+def _match_item(name: str, lookup: dict) -> Optional[dict]:
+    """Map a (possibly sloppy) item name to a menu entry, or None if ambiguous."""
+    n = _norm(name)
+    if not n:
+        return None
+    if n in lookup:
+        return lookup[n]
+    # Partial match: the model may return a shorter form of a menu name.
+    candidates = [v for k, v in lookup.items() if n in k]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
 
 
 def parse_order(transcript: str, menu: List[dict]) -> dict:
@@ -125,18 +141,20 @@ def parse_order(transcript: str, menu: List[dict]) -> dict:
          or {"status": "clarification", "question": str}.
     """
     if not transcript.strip():
-        return {"status": "clarification", "question": "Sorry, I didn't catch that. Could you repeat your order?"}
+        return {
+            "status": "clarification",
+            "question": "Sorry, I didn't catch that. Could you repeat your order?",
+        }
 
     if not DEEPSEEK_API_KEY:
         raise RuntimeError(
             "DEEPSEEK_API_KEY is not set. Export it before running the voice pipeline."
         )
 
-    system = _SYSTEM_PROMPT.format(menu=_menu_text(menu))
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [
-            {"role": "system", "content": system},
+            {"role": "system", "content": _SYSTEM_PROMPT.format(menu=_menu_text(menu))},
             {"role": "user", "content": transcript.strip()},
         ],
         "response_format": {"type": "json_object"},
@@ -155,20 +173,25 @@ def parse_order(transcript: str, menu: List[dict]) -> dict:
     try:
         result = json.loads(content)
     except json.JSONDecodeError:
-        return {"status": "clarification", "question": "Sorry, I had trouble understanding that. Could you repeat your order?"}
+        return {
+            "status": "clarification",
+            "question": "Sorry, I had trouble understanding that. Could you repeat your order?",
+        }
 
     if result.get("status") == "clarification":
         return result
 
-    # Normalize a valid order and recompute the total from real menu prices so
-    # we never trust a hallucinated price.
+    # Reconcile the model's items against the real menu (tolerant matching) and
+    # recompute the total from real prices so we never trust a hallucinated one.
     lookup = _menu_lookup(menu)
     items = _normalize_items(result.get("items", []), lookup)
     if not items:
-        return {"status": "clarification", "question": "Sorry, I couldn't find those items on the menu. What would you like?"}
+        return {
+            "status": "clarification",
+            "question": "Sorry, I couldn't find those items on the menu. What would you like?",
+        }
 
     total = round(sum(it["price"] * it["quantity"] for it in items), 2)
-    # The backend only stores {name, quantity, notes}; drop the internal price.
     clean_items = [
         {"name": it["name"], "quantity": it["quantity"], "notes": it["notes"]}
         for it in items
@@ -177,20 +200,15 @@ def parse_order(transcript: str, menu: List[dict]) -> dict:
 
 
 def _normalize_items(raw_items, lookup: dict) -> List[dict]:
-    """Drop unknown items, merge duplicates, and canonicalize names to the menu.
-
-    Returns [{name, quantity, notes, price}] where `price` is the real menu price
-    (kept internally only; the caller strips it before sending to the backend).
-    """
+    """Drop unknown items, merge duplicates, canonicalize names, keep real prices."""
     merged: dict = {}
 
     for raw in raw_items or []:
         name = (raw.get("name") or "").strip()
-        if not name:
+        entry = _match_item(name, lookup)
+        if entry is None:
             continue
-        key = name.lower()
-        if key not in lookup:
-            continue
+        key = _norm(entry["name"])
         try:
             qty = int(raw.get("quantity", 1) or 1)
         except (TypeError, ValueError):
@@ -203,10 +221,10 @@ def _normalize_items(raw_items, lookup: dict) -> List[dict]:
                 merged[key]["notes"] = (merged[key]["notes"] + "; " + notes).strip("; ")
         else:
             merged[key] = {
-                "name": lookup[key]["name"],
+                "name": entry["name"],
                 "quantity": qty,
                 "notes": notes,
-                "price": lookup[key]["price"],
+                "price": entry["price"],
             }
 
     return [
